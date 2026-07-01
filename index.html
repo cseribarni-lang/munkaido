@@ -190,24 +190,24 @@ function fetchAll() {
   return _fetchAll.apply(this, arguments);
 }
 function _fetchAll() {
-  _fetchAll = _asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee9() {
+  _fetchAll = _asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee1() {
     var _yield$Promise$all, _yield$Promise$all2, emp, ent, lv;
-    return _regenerator().w(function (_context9) {
-      while (1) switch (_context9.n) {
+    return _regenerator().w(function (_context1) {
+      while (1) switch (_context1.n) {
         case 0:
-          _context9.n = 1;
+          _context1.n = 1;
           return Promise.all([supabase.from("employees").select("*").order("created_at"), supabase.from("entries").select("*").order("check_in", {
             ascending: false
           }), supabase.from("leave_requests").select("*").order("created_at", {
             ascending: false
           })]);
         case 1:
-          _yield$Promise$all = _context9.v;
+          _yield$Promise$all = _context1.v;
           _yield$Promise$all2 = _slicedToArray(_yield$Promise$all, 3);
           emp = _yield$Promise$all2[0].data;
           ent = _yield$Promise$all2[1].data;
           lv = _yield$Promise$all2[2].data;
-          return _context9.a(2, {
+          return _context1.a(2, {
             employees: (emp || []).map(function (e) {
               return {
                 id: e.id,
@@ -219,7 +219,7 @@ function _fetchAll() {
             leaveRequests: (lv || []).map(rowToLeave)
           });
       }
-    }, _callee9);
+    }, _callee1);
   }));
   return _fetchAll.apply(this, arguments);
 }
@@ -538,6 +538,29 @@ function App() {
     }
     return updateLeaveStatus;
   }();
+  var updateEntry = /*#__PURE__*/function () {
+    var _updateEntry = _asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee8(id, checkIn, checkOut) {
+      return _regenerator().w(function (_context8) {
+        while (1) switch (_context8.n) {
+          case 0:
+            _context8.n = 1;
+            return supabase.from("entries").update({
+              check_in: checkIn,
+              check_out: checkOut || null
+            }).eq("id", id);
+          case 1:
+            _context8.n = 2;
+            return refresh();
+          case 2:
+            return _context8.a(2);
+        }
+      }, _callee8);
+    }));
+    function updateEntry(_x7, _x8, _x9) {
+      return _updateEntry.apply(this, arguments);
+    }
+    return updateEntry;
+  }();
   if (entries === null || leaveRequests === null || employees === null) {
     return /*#__PURE__*/React.createElement("div", {
       style: styles.loadingScreen
@@ -580,6 +603,7 @@ function App() {
     onAddEmployee: addEmployee,
     onRemoveEmployee: removeEmployee,
     onUpdateLeaveStatus: updateLeaveStatus,
+    onUpdateEntry: updateEntry,
     onLogout: handleLogout
   }));
 }
@@ -982,6 +1006,7 @@ function AdminScreen(_ref6) {
     onAddEmployee = _ref6.onAddEmployee,
     onRemoveEmployee = _ref6.onRemoveEmployee,
     onUpdateLeaveStatus = _ref6.onUpdateLeaveStatus,
+    onUpdateEntry = _ref6.onUpdateEntry,
     onLogout = _ref6.onLogout;
   var _useState35 = useState("summary"),
     _useState36 = _slicedToArray(_useState35, 2),
@@ -1121,6 +1146,10 @@ function AdminScreen(_ref6) {
     employees: employees,
     onAdd: onAddEmployee,
     onRemove: onRemoveEmployee
+  }), tab === "entries" && /*#__PURE__*/React.createElement(EntriesTab, {
+    entries: entries,
+    month: month,
+    onUpdateEntry: onUpdateEntry
   })), /*#__PURE__*/React.createElement("div", {
     style: styles.bottomNav
   }, /*#__PURE__*/React.createElement("button", {
@@ -1139,6 +1168,21 @@ function AdminScreen(_ref6) {
       fontSize: 11
     }
   }, "\xD6sszes\xEDt\u0151")), /*#__PURE__*/React.createElement("button", {
+    style: _objectSpread(_objectSpread({}, styles.navBtn), {}, {
+      color: tab === "entries" ? "#3b6e5e" : "#9b9486"
+    }),
+    onClick: function onClick() {
+      return setTab("entries");
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 16
+    }
+  }, "\u270F\uFE0F"), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 11
+    }
+  }, "Bejegyz\xE9sek")), /*#__PURE__*/React.createElement("button", {
     style: _objectSpread(_objectSpread({}, styles.navBtn), {}, {
       color: tab === "leave" ? "#3b6e5e" : "#9b9486"
     }),
@@ -1170,64 +1214,219 @@ function AdminScreen(_ref6) {
     }
   }, "Dolgoz\xF3k"))));
 }
-function EmployeesTab(_ref8) {
-  var employees = _ref8.employees,
-    onAdd = _ref8.onAdd,
-    onRemove = _ref8.onRemove;
-  var _useState39 = useState(""),
+function EntriesTab(_ref8) {
+  var entries = _ref8.entries,
+    month = _ref8.month,
+    onUpdateEntry = _ref8.onUpdateEntry;
+  var _useState39 = useState(null),
     _useState40 = _slicedToArray(_useState39, 2),
-    name = _useState40[0],
-    setName = _useState40[1];
+    editId = _useState40[0],
+    setEditId = _useState40[1];
   var _useState41 = useState(""),
     _useState42 = _slicedToArray(_useState41, 2),
-    pin = _useState42[0],
-    setPin = _useState42[1];
+    editIn = _useState42[0],
+    setEditIn = _useState42[1];
   var _useState43 = useState(""),
     _useState44 = _slicedToArray(_useState43, 2),
-    error = _useState44[0],
-    setError = _useState44[1];
-  var _useState45 = useState(null),
+    editOut = _useState44[0],
+    setEditOut = _useState44[1];
+  var _useState45 = useState(false),
     _useState46 = _slicedToArray(_useState45, 2),
-    confirmRemove = _useState46[0],
-    setConfirmRemove = _useState46[1];
+    saving = _useState46[0],
+    setSaving = _useState46[1];
+  var monthEntries = useMemo(function () {
+    return entries.filter(function (e) {
+      return monthKey(new Date(e.checkIn)) === month;
+    }).sort(function (a, b) {
+      return new Date(b.checkIn) - new Date(a.checkIn);
+    });
+  }, [entries, month]);
+  var startEdit = function startEdit(e) {
+    setEditId(e.id);
+    // datetime-local inputhoz: "YYYY-MM-DDTHH:mm"
+    var inD = new Date(e.checkIn);
+    setEditIn("".concat(fmtDate(inD), "T").concat(pad(inD.getHours()), ":").concat(pad(inD.getMinutes())));
+    if (e.checkOut) {
+      var outD = new Date(e.checkOut);
+      setEditOut("".concat(fmtDate(outD), "T").concat(pad(outD.getHours()), ":").concat(pad(outD.getMinutes())));
+    } else {
+      setEditOut("");
+    }
+  };
+  var save = /*#__PURE__*/function () {
+    var _save = _asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee9() {
+      return _regenerator().w(function (_context9) {
+        while (1) switch (_context9.n) {
+          case 0:
+            if (editIn) {
+              _context9.n = 1;
+              break;
+            }
+            return _context9.a(2);
+          case 1:
+            setSaving(true);
+            _context9.n = 2;
+            return onUpdateEntry(editId, new Date(editIn).toISOString(), editOut ? new Date(editOut).toISOString() : null);
+          case 2:
+            setSaving(false);
+            setEditId(null);
+          case 3:
+            return _context9.a(2);
+        }
+      }, _callee9);
+    }));
+    function save() {
+      return _save.apply(this, arguments);
+    }
+    return save;
+  }();
+  if (monthEntries.length === 0) return /*#__PURE__*/React.createElement("div", {
+    style: styles.content
+  }, /*#__PURE__*/React.createElement(EmptyState, {
+    text: "Ebben a h\xF3napban nincs bejegyz\xE9s."
+  }));
+  return /*#__PURE__*/React.createElement("div", {
+    style: styles.content
+  }, /*#__PURE__*/React.createElement("div", {
+    style: styles.workdaysNote
+  }, "\u270F\uFE0F Kattints egy bejegyz\xE9sre a szerkeszt\xE9shez"), monthEntries.map(function (e) {
+    var dur = e.checkOut ? hoursBetween(new Date(e.checkIn), new Date(e.checkOut)) : null;
+    var isEditing = editId === e.id;
+    return /*#__PURE__*/React.createElement("div", {
+      key: e.id,
+      style: _objectSpread(_objectSpread({}, styles.entryRow), {}, {
+        flexDirection: "column",
+        alignItems: "stretch",
+        gap: 8
+      })
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        alignItems: "center"
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        flex: 1
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: styles.entryDate
+    }, e.userName, " \xB7 ", fmtDate(new Date(e.checkIn))), /*#__PURE__*/React.createElement("div", {
+      style: styles.entryTimes
+    }, fmtTime(new Date(e.checkIn)), " \u2192 ", e.checkOut ? fmtTime(new Date(e.checkOut)) : "folyamatban", dur !== null && /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: "#3b6e5e",
+        fontWeight: 700,
+        marginLeft: 8
+      }
+    }, fmtHM(dur)))), /*#__PURE__*/React.createElement("button", {
+      style: _objectSpread(_objectSpread({}, styles.ghostSmallBtn), {}, {
+        color: isEditing ? "#a14b3e" : "#3b6e5e"
+      }),
+      onClick: function onClick() {
+        return isEditing ? setEditId(null) : startEdit(e);
+      }
+    }, isEditing ? "✕" : "✏️")), isEditing && /*#__PURE__*/React.createElement("div", {
+      style: {
+        borderTop: "1px solid #ece7da",
+        paddingTop: 10
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: styles.formRow
+    }, /*#__PURE__*/React.createElement("label", {
+      style: styles.formLabel
+    }, "\xC9rkez\xE9s (check-in)"), /*#__PURE__*/React.createElement("input", {
+      style: styles.dateInput,
+      type: "datetime-local",
+      value: editIn,
+      onChange: function onChange(ev) {
+        return setEditIn(ev.target.value);
+      }
+    })), /*#__PURE__*/React.createElement("div", {
+      style: styles.formRow
+    }, /*#__PURE__*/React.createElement("label", {
+      style: styles.formLabel
+    }, "T\xE1voz\xE1s (check-out)"), /*#__PURE__*/React.createElement("input", {
+      style: styles.dateInput,
+      type: "datetime-local",
+      value: editOut,
+      onChange: function onChange(ev) {
+        return setEditOut(ev.target.value);
+      }
+    })), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 8
+      }
+    }, /*#__PURE__*/React.createElement("button", {
+      style: styles.primaryBtn,
+      onClick: save,
+      disabled: saving
+    }, saving ? "Mentés…" : "✓ Mentés"), /*#__PURE__*/React.createElement("button", {
+      style: styles.ghostBtn,
+      onClick: function onClick() {
+        return setEditId(null);
+      }
+    }, "M\xE9gse"))));
+  }));
+}
+function EmployeesTab(_ref9) {
+  var employees = _ref9.employees,
+    onAdd = _ref9.onAdd,
+    onRemove = _ref9.onRemove;
+  var _useState47 = useState(""),
+    _useState48 = _slicedToArray(_useState47, 2),
+    name = _useState48[0],
+    setName = _useState48[1];
+  var _useState49 = useState(""),
+    _useState50 = _slicedToArray(_useState49, 2),
+    pin = _useState50[0],
+    setPin = _useState50[1];
+  var _useState51 = useState(""),
+    _useState52 = _slicedToArray(_useState51, 2),
+    error = _useState52[0],
+    setError = _useState52[1];
+  var _useState53 = useState(null),
+    _useState54 = _slicedToArray(_useState53, 2),
+    confirmRemove = _useState54[0],
+    setConfirmRemove = _useState54[1];
   var submit = /*#__PURE__*/function () {
-    var _submit = _asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee8() {
+    var _submit = _asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee0() {
       var res;
-      return _regenerator().w(function (_context8) {
-        while (1) switch (_context8.n) {
+      return _regenerator().w(function (_context0) {
+        while (1) switch (_context0.n) {
           case 0:
             setError("");
             if (name.trim()) {
-              _context8.n = 1;
+              _context0.n = 1;
               break;
             }
             setError("Adj meg egy nevet.");
-            return _context8.a(2);
+            return _context0.a(2);
           case 1:
             if (!(pin.length < 4)) {
-              _context8.n = 2;
+              _context0.n = 2;
               break;
             }
             setError("A PIN legalább 4 számjegy legyen.");
-            return _context8.a(2);
+            return _context0.a(2);
           case 2:
-            _context8.n = 3;
+            _context0.n = 3;
             return onAdd(name.trim(), pin);
           case 3:
-            res = _context8.v;
+            res = _context0.v;
             if (res.ok) {
-              _context8.n = 4;
+              _context0.n = 4;
               break;
             }
             setError(res.error);
-            return _context8.a(2);
+            return _context0.a(2);
           case 4:
             setName("");
             setPin("");
           case 5:
-            return _context8.a(2);
+            return _context0.a(2);
         }
-      }, _callee8);
+      }, _callee0);
     }));
     function submit() {
       return _submit.apply(this, arguments);
@@ -1307,10 +1506,10 @@ function EmployeesTab(_ref8) {
     }, "\u2715"));
   })));
 }
-function TopBar(_ref9) {
-  var title = _ref9.title,
-    subtitle = _ref9.subtitle,
-    onLogout = _ref9.onLogout;
+function TopBar(_ref0) {
+  var title = _ref0.title,
+    subtitle = _ref0.subtitle,
+    onLogout = _ref0.onLogout;
   return /*#__PURE__*/React.createElement("div", {
     style: styles.topBar
   }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
@@ -1322,8 +1521,8 @@ function TopBar(_ref9) {
     onClick: onLogout
   }, "Kil\xE9p\xE9s"));
 }
-function EmptyState(_ref0) {
-  var text = _ref0.text;
+function EmptyState(_ref1) {
+  var text = _ref1.text;
   return /*#__PURE__*/React.createElement("div", {
     style: styles.emptyState
   }, text);
