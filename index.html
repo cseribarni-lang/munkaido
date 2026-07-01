@@ -1,0 +1,661 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no" />
+<title>Cseri Pincészet · Jelenlét</title>
+<link rel="manifest" href="data:application/json,{%22name%22:%22Jelenl%C3%A9t%22,%22short_name%22:%22Jelenl%C3%A9t%22,%22start_url%22:%22.%22,%22display%22:%22standalone%22,%22background_color%22:%22%23f7f5f0%22,%22theme_color%22:%22%233b6e5e%22}" />
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js" crossorigin></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; background: #f7f5f0; color: #262420; }
+  input, select, button { font-family: inherit; }
+  input[type=date]::-webkit-calendar-picker-indicator, input[type=month]::-webkit-calendar-picker-indicator { filter: invert(0.4); }
+  @keyframes spin { from { transform: rotate(0deg);} to { transform: rotate(360deg);} }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo } = React;
+
+// ====== ÁLLÍTSD BE A SAJÁT SUPABASE PROJECTED ADATAIVAL ======
+const SUPABASE_URL = "https://tbigqmtirjaukhxwmqhw.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_6UD_aMtMYZxsHd5wXUmthw_UodjS_yH";
+// ===============================================================
+
+const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+const ADMIN_PIN = "9720";
+const DAILY_HOURS = 8;
+const TYPE_LABEL = { work: "Munka", vacation: "Szabadság", sick: "Betegszabadság" };
+const TYPE_COLOR = { work: "#3b6e5e", vacation: "#b08a3e", sick: "#a14b3e" };
+
+function slugify(name) {
+  return name.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "").slice(0, 20) || `dolgozo${Date.now()}`;
+}
+function pad(n) { return n.toString().padStart(2, "0"); }
+function fmtDate(d) { return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; }
+function fmtTime(d) { return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`; }
+function monthKey(d) { return `${d.getFullYear()}-${pad(d.getMonth() + 1)}`; }
+function hoursBetween(a, b) { return (b - a) / 1000 / 3600; }
+function fmtHM(hoursFloat) {
+  const sign = hoursFloat < 0 ? "-" : "";
+  const abs = Math.abs(hoursFloat);
+  const h = Math.floor(abs);
+  const m = Math.round((abs - h) * 60);
+  return `${sign}${h}ó ${pad(m)}p`;
+}
+function isWeekend(d) { const day = d.getDay(); return day === 0 || day === 6; }
+function getWorkdaysInMonth(monthStr) {
+  const [year, month] = monthStr.split("-").map(Number);
+  const daysInMonth = new Date(year, month, 0).getDate();
+  let count = 0;
+  for (let day = 1; day <= daysInMonth; day++) {
+    if (!isWeekend(new Date(year, month - 1, day))) count++;
+  }
+  return count;
+}
+function leaveWorkdaysInMonth(leave, monthStr) {
+  const [year, month] = monthStr.split("-").map(Number);
+  const monthStart = new Date(year, month - 1, 1);
+  const monthEnd = new Date(year, month, 0);
+  const from = new Date(leave.from);
+  const to = new Date(leave.to);
+  const start = from > monthStart ? from : monthStart;
+  const end = to < monthEnd ? to : monthEnd;
+  if (start > end) return 0;
+  let count = 0;
+  const cur = new Date(start);
+  while (cur <= end) {
+    if (!isWeekend(cur)) count++;
+    cur.setDate(cur.getDate() + 1);
+  }
+  return count;
+}
+
+function getLocation() {
+  return new Promise((resolve) => {
+    if (!window.isSecureContext) {
+      resolve({ lat: null, lng: null, error: "A helymeghatározás csak biztonságos (https) kapcsolaton működik." });
+      return;
+    }
+    if (!navigator.geolocation) {
+      resolve({ lat: null, lng: null, error: "A böngésző nem támogatja a helymeghatározást." });
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude, error: null }),
+      (err) => {
+        let msg = "Nem sikerült lekérni a helyet.";
+        if (err.code === 1) msg = "Nincs engedélyezve a helymeghatározás — engedélyezd a böngésző beállításaiban.";
+        else if (err.code === 2) msg = "A hely jelenleg nem elérhető (GPS kikapcsolva vagy gyenge jel).";
+        else if (err.code === 3) msg = "Időtúllépés a hely lekérése közben — próbáld újra.";
+        resolve({ lat: null, lng: null, error: msg });
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
+  });
+}
+
+// ---------- Supabase adat-átalakítók ----------
+function rowToEntry(r) {
+  return {
+    id: r.id, userId: r.user_id, userName: r.user_name,
+    checkIn: r.check_in, checkOut: r.check_out,
+    locIn: r.loc_in, locOut: r.loc_out,
+    locInError: r.loc_in_error, locOutError: r.loc_out_error,
+  };
+}
+function rowToLeave(r) {
+  return {
+    id: r.id, userId: r.user_id, userName: r.user_name, type: r.type,
+    from: r.from_date, to: r.to_date, note: r.note, status: r.status,
+  };
+}
+
+async function fetchAll() {
+  const [{ data: emp }, { data: ent }, { data: lv }] = await Promise.all([
+    supabase.from("employees").select("*").order("created_at"),
+    supabase.from("entries").select("*").order("check_in", { ascending: false }),
+    supabase.from("leave_requests").select("*").order("created_at", { ascending: false }),
+  ]);
+  return {
+    employees: (emp || []).map((e) => ({ id: e.id, name: e.name, pin: e.pin })),
+    entries: (ent || []).map(rowToEntry),
+    leaveRequests: (lv || []).map(rowToLeave),
+  };
+}
+
+function App() {
+  const [screen, setScreen] = useState("login");
+  const [currentUser, setCurrentUser] = useState(null);
+  const [loginError, setLoginError] = useState("");
+  const [entries, setEntries] = useState(null);
+  const [leaveRequests, setLeaveRequests] = useState(null);
+  const [employees, setEmployees] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [locating, setLocating] = useState(false);
+  const [locWarning, setLocWarning] = useState(null);
+  const [activeOpenEntry, setActiveOpenEntry] = useState(null);
+
+  const refresh = async () => {
+    const { employees, entries, leaveRequests } = await fetchAll();
+    setEmployees(employees);
+    setEntries(entries);
+    setLeaveRequests(leaveRequests);
+  };
+
+  useEffect(() => { refresh(); }, []);
+
+  useEffect(() => {
+    if (!entries || !currentUser) { setActiveOpenEntry(null); return; }
+    const open = entries.find((e) => e.userId === currentUser.id && e.checkOut === null);
+    setActiveOpenEntry(open || null);
+  }, [entries, currentUser]);
+
+  const handleLogin = (id, pin) => {
+    setLoginError("");
+    if (id === "admin") {
+      if (pin === ADMIN_PIN) { setCurrentUser({ id: "admin", name: "Admin" }); setScreen("admin"); }
+      else setLoginError("Hibás admin PIN.");
+      return;
+    }
+    const emp = employees.find((e) => e.id === id);
+    if (emp && emp.pin === pin) { setCurrentUser(emp); setScreen("employee"); }
+    else setLoginError("Hibás PIN kód.");
+  };
+
+  const handleLogout = () => { setCurrentUser(null); setScreen("login"); };
+
+  const doCheckIn = async () => {
+    setLocating(true); setLocWarning(null);
+    const loc = await getLocation();
+    setLocating(false);
+    if (loc.error) setLocWarning(loc.error);
+    const now = new Date();
+    setLoading(true);
+    await supabase.from("entries").insert({
+      id: `${currentUser.id}_${now.getTime()}`,
+      user_id: currentUser.id, user_name: currentUser.name,
+      check_in: now.toISOString(), check_out: null,
+      loc_in: loc.lat ? { lat: loc.lat, lng: loc.lng } : null,
+      loc_in_error: loc.error,
+    });
+    await refresh();
+    setLoading(false);
+  };
+
+  const doCheckOut = async () => {
+    if (!activeOpenEntry) return;
+    setLocating(true); setLocWarning(null);
+    const loc = await getLocation();
+    setLocating(false);
+    if (loc.error) setLocWarning(loc.error);
+    const now = new Date();
+    setLoading(true);
+    await supabase.from("entries").update({
+      check_out: now.toISOString(),
+      loc_out: loc.lat ? { lat: loc.lat, lng: loc.lng } : null,
+      loc_out_error: loc.error,
+    }).eq("id", activeOpenEntry.id);
+    await refresh();
+    setLoading(false);
+  };
+
+  const submitLeaveRequest = async (req) => {
+    await supabase.from("leave_requests").insert({
+      id: `${req.userId}_${Date.now()}`,
+      user_id: req.userId, user_name: req.userName, type: req.type,
+      from_date: req.from, to_date: req.to, note: req.note, status: "elfogadva",
+    });
+    await refresh();
+  };
+
+  const addEmployee = async (name, pin) => {
+    const id = slugify(name);
+    if (employees.some((e) => e.id === id)) return { ok: false, error: "Már van ilyen nevű dolgozó." };
+    const { error } = await supabase.from("employees").insert({ id, name, pin });
+    if (error) return { ok: false, error: "Mentési hiba: " + error.message };
+    await refresh();
+    return { ok: true };
+  };
+
+  const removeEmployee = async (id) => {
+    await supabase.from("employees").delete().eq("id", id);
+    await refresh();
+  };
+
+  const updateLeaveStatus = async (id, status) => {
+    await supabase.from("leave_requests").update({ status }).eq("id", id);
+    await refresh();
+  };
+
+  if (entries === null || leaveRequests === null || employees === null) {
+    return <div style={styles.loadingScreen}>
+      <div style={{ width: 32, height: 32, border: "3px solid #e6e1d6", borderTopColor: "#3b6e5e", borderRadius: "50%", animation: "spin 1s linear infinite" }} />
+    </div>;
+  }
+
+  return (
+    <div style={styles.app}>
+      {screen === "login" && <LoginScreen onLogin={handleLogin} error={loginError} employees={employees} />}
+      {screen === "employee" && currentUser && (
+        <EmployeeScreen user={currentUser} entries={entries} leaveRequests={leaveRequests}
+          activeOpenEntry={activeOpenEntry} onCheckIn={doCheckIn} onCheckOut={doCheckOut}
+          onSubmitLeave={submitLeaveRequest} onLogout={handleLogout} loading={loading}
+          locating={locating} locWarning={locWarning} onDismissWarning={() => setLocWarning(null)} />
+      )}
+      {screen === "admin" && currentUser && (
+        <AdminScreen entries={entries} leaveRequests={leaveRequests} employees={employees}
+          onAddEmployee={addEmployee} onRemoveEmployee={removeEmployee}
+          onUpdateLeaveStatus={updateLeaveStatus} onLogout={handleLogout} />
+      )}
+    </div>
+  );
+}
+
+function LoginScreen({ onLogin, error, employees }) {
+  const [selected, setSelected] = useState(null);
+  const [pin, setPin] = useState("");
+  const submit = () => { if (!selected) return; onLogin(selected === "admin" ? "admin" : selected.id, pin); setPin(""); };
+  return (
+    <div style={styles.centerWrap}>
+      <div style={styles.card}>
+        <div style={styles.brandRow}><span style={{ fontSize: 22 }}>🕐</span><span style={styles.brandText}>Cseri Pincészet · Jelenlét</span></div>
+        {!selected && (
+          <>
+            <p style={styles.subtle}>Válaszd ki a neved a belépéshez</p>
+            <div style={styles.empGrid}>
+              {employees.map((e) => <button key={e.id} style={styles.empBtn} onClick={() => setSelected(e)}>{e.name}</button>)}
+            </div>
+            <button style={styles.adminLink} onClick={() => setSelected("admin")}>🛡 Admin belépés</button>
+          </>
+        )}
+        {selected && (
+          <>
+            <button style={styles.backRow} onClick={() => { setSelected(null); setPin(""); }}>← Vissza</button>
+            <p style={styles.subtle}>{selected === "admin" ? "Admin" : selected.name} — add meg a PIN kódot</p>
+            <input style={styles.pinInput} type="password" inputMode="numeric" maxLength={6} value={pin} autoFocus
+              onChange={(e) => setPin(e.target.value.replace(/\D/g, ""))}
+              onKeyDown={(e) => { if (e.key === "Enter") submit(); }} placeholder="••••" />
+            {error && <div style={styles.errorBox}>⚠ {error}</div>}
+            <button style={styles.primaryBtn} onClick={submit}>Belépés</button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function EmployeeScreen({ user, entries, leaveRequests, activeOpenEntry, onCheckIn, onCheckOut, onSubmitLeave, onLogout, loading, locating, locWarning, onDismissWarning }) {
+  const [tab, setTab] = useState("home");
+  const myEntries = useMemo(() => entries.filter((e) => e.userId === user.id).sort((a, b) => new Date(b.checkIn) - new Date(a.checkIn)), [entries, user.id]);
+  const myLeave = useMemo(() => leaveRequests.filter((l) => l.userId === user.id).sort((a, b) => new Date(b.from) - new Date(a.from)), [leaveRequests, user.id]);
+  const currentMonth = monthKey(new Date());
+  const monthStats = useMemo(() => {
+    let total = 0;
+    myEntries.forEach((e) => { if (e.checkOut && monthKey(new Date(e.checkIn)) === currentMonth) total += hoursBetween(new Date(e.checkIn), new Date(e.checkOut)); });
+    const workdays = getWorkdaysInMonth(currentMonth);
+    const approvedLeave = myLeave.filter((l) => l.status !== "elutasítva");
+    const leaveDays = approvedLeave.reduce((s, l) => s + leaveWorkdaysInMonth(l, currentMonth), 0);
+    const requiredHours = Math.max(0, workdays - leaveDays) * DAILY_HOURS;
+    return { total, requiredHours, diff: total - requiredHours };
+  }, [myEntries, myLeave, currentMonth]);
+
+  return (
+    <div style={styles.screenWrap}>
+      <TopBar title={user.name} subtitle="Jelenlét" onLogout={onLogout} />
+      {tab === "home" && (
+        <div style={styles.content}>
+          {locWarning && (
+            <div style={styles.warnBanner}>
+              <span style={{ flex: 1 }}>⚠ {locWarning} A csekkolás lokáció nélkül elmentve.</span>
+              <button style={styles.warnClose} onClick={onDismissWarning}>✕</button>
+            </div>
+          )}
+          <div style={styles.statusCard}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div style={{ ...styles.statusDot, background: activeOpenEntry ? "#3b6e5e" : "#b6b0a3" }} />
+              <div>
+                <div style={styles.statusLabel}>{activeOpenEntry ? "Bejelentkezve" : "Nincs aktív jelenlét"}</div>
+                {activeOpenEntry && <div style={styles.statusSub}>Érkezés: {fmtTime(new Date(activeOpenEntry.checkIn))} ({fmtDate(new Date(activeOpenEntry.checkIn))})</div>}
+              </div>
+            </div>
+          </div>
+          {!activeOpenEntry ? (
+            <button style={styles.bigActionBtn} onClick={onCheckIn} disabled={loading || locating}>
+              {locating ? "Hely lekérése…" : "→] Érkezés (check-in)"}
+            </button>
+          ) : (
+            <button style={{ ...styles.bigActionBtn, background: "#a14b3e" }} onClick={onCheckOut} disabled={loading || locating}>
+              {locating ? "Hely lekérése…" : "[← Távozás (check-out)"}
+            </button>
+          )}
+          <div style={styles.monthSummary}>📅 Ez a hónap eddig: <strong>{fmtHM(monthStats.total)}</strong> / elvárt {fmtHM(monthStats.requiredHours)}</div>
+          <div style={{ ...styles.diffBadge, ...(monthStats.diff >= 0 ? styles.diffPositive : styles.diffNegative), display: "block", textAlign: "center", marginTop: 10 }}>
+            {monthStats.diff >= 0 ? "Túlóra: +" : "Hiányzó óra: "}{fmtHM(monthStats.diff)}
+          </div>
+        </div>
+      )}
+      {tab === "history" && <HistoryTab entries={myEntries} />}
+      {tab === "leave" && <LeaveTab leaveRequests={myLeave} onSubmit={(req) => onSubmitLeave({ ...req, userId: user.id, userName: user.name })} />}
+      <BottomNav tab={tab} setTab={setTab} />
+    </div>
+  );
+}
+
+function HistoryTab({ entries }) {
+  if (entries.length === 0) return <div style={styles.content}><EmptyState text="Még nincs rögzített csekkolás." /></div>;
+  return (
+    <div style={styles.content}>
+      {entries.map((e) => {
+        const dur = e.checkOut ? hoursBetween(new Date(e.checkIn), new Date(e.checkOut)) : null;
+        return (
+          <div key={e.id} style={styles.entryRow}>
+            <div style={{ flex: 1 }}>
+              <div style={styles.entryDate}>{fmtDate(new Date(e.checkIn))}</div>
+              <div style={styles.entryTimes}>{fmtTime(new Date(e.checkIn))} → {e.checkOut ? fmtTime(new Date(e.checkOut)) : "folyamatban"}</div>
+              <div style={styles.entryLoc}>📍 {e.locIn ? `${e.locIn.lat.toFixed(4)}, ${e.locIn.lng.toFixed(4)}` : (e.locInError || "hely nem elérhető")}</div>
+            </div>
+            {dur !== null && <div style={styles.entryDur}>{fmtHM(dur)}</div>}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function LeaveTab({ leaveRequests, onSubmit }) {
+  const [showForm, setShowForm] = useState(false);
+  const [type, setType] = useState("vacation");
+  const [from, setFrom] = useState(fmtDate(new Date()));
+  const [to, setTo] = useState(fmtDate(new Date()));
+  const [note, setNote] = useState("");
+  const submit = () => { if (!from || !to) return; onSubmit({ type, from, to, note }); setShowForm(false); setNote(""); };
+  return (
+    <div style={styles.content}>
+      {!showForm ? (
+        <button style={styles.secondaryBtn} onClick={() => setShowForm(true)}>+ Szabadság / betegszabadság kérése</button>
+      ) : (
+        <div style={styles.formCard}>
+          <div style={styles.formRow}>
+            <label style={styles.formLabel}>Típus</label>
+            <div style={{ display: "flex", gap: 8 }}>
+              {["vacation", "sick"].map((t) => (
+                <button key={t} style={{ ...styles.chip, ...(type === t ? styles.chipActive(TYPE_COLOR[t]) : {}) }} onClick={() => setType(t)}>{TYPE_LABEL[t]}</button>
+              ))}
+            </div>
+          </div>
+          <div style={styles.formRow}><label style={styles.formLabel}>Mettől</label><input style={styles.dateInput} type="date" value={from} onChange={(e) => setFrom(e.target.value)} /></div>
+          <div style={styles.formRow}><label style={styles.formLabel}>Meddig</label><input style={styles.dateInput} type="date" value={to} onChange={(e) => setTo(e.target.value)} /></div>
+          <div style={styles.formRow}><label style={styles.formLabel}>Megjegyzés (opcionális)</label><input style={styles.textInput} type="text" value={note} onChange={(e) => setNote(e.target.value)} placeholder="pl. orvosi igazolás száma" /></div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button style={styles.primaryBtn} onClick={submit}>✓ Beküldés</button>
+            <button style={styles.ghostBtn} onClick={() => setShowForm(false)}>✕ Mégse</button>
+          </div>
+        </div>
+      )}
+      <div style={{ marginTop: 18 }}>
+        {leaveRequests.length === 0 ? <EmptyState text="Még nincs leadott kérelem." /> : leaveRequests.map((l) => (
+          <div key={l.id} style={styles.leaveRow}>
+            <div style={{ ...styles.typeTag, background: TYPE_COLOR[l.type] + "22", color: TYPE_COLOR[l.type] }}>{TYPE_LABEL[l.type]}</div>
+            <div style={{ flex: 1 }}>
+              <div style={styles.entryDate}>{l.from} – {l.to}</div>
+              {l.note && <div style={styles.entryLoc}>{l.note}</div>}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function BottomNav({ tab, setTab }) {
+  const items = [{ id: "home", label: "Csekkolás", icon: "🕐" }, { id: "history", label: "Előzmények", icon: "📅" }, { id: "leave", label: "Szabadság", icon: "📋" }];
+  return (
+    <div style={styles.bottomNav}>
+      {items.map((it) => (
+        <button key={it.id} style={{ ...styles.navBtn, color: tab === it.id ? "#3b6e5e" : "#9b9486" }} onClick={() => setTab(it.id)}>
+          <span style={{ fontSize: 16 }}>{it.icon}</span><span style={{ fontSize: 11 }}>{it.label}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function AdminScreen({ entries, leaveRequests, employees, onAddEmployee, onRemoveEmployee, onUpdateLeaveStatus, onLogout }) {
+  const [tab, setTab] = useState("summary");
+  const [month, setMonth] = useState(monthKey(new Date()));
+  const summary = useMemo(() => {
+    const workdays = getWorkdaysInMonth(month);
+    return employees.map((emp) => {
+      const empEntries = entries.filter((e) => e.userId === emp.id && e.checkOut && monthKey(new Date(e.checkIn)) === month);
+      const totalHours = empEntries.reduce((s, e) => s + hoursBetween(new Date(e.checkIn), new Date(e.checkOut)), 0);
+      const approvedLeave = leaveRequests.filter((l) => l.userId === emp.id && l.status !== "elutasítva");
+      const vacDays = approvedLeave.filter((l) => l.type === "vacation").reduce((s, l) => s + leaveWorkdaysInMonth(l, month), 0);
+      const sickDays = approvedLeave.filter((l) => l.type === "sick").reduce((s, l) => s + leaveWorkdaysInMonth(l, month), 0);
+      const requiredHours = Math.max(0, workdays - vacDays - sickDays) * DAILY_HOURS;
+      const diff = totalHours - requiredHours;
+      return { emp, totalHours, entriesCount: empEntries.length, vacDays, sickDays, requiredHours, diff };
+    });
+  }, [entries, leaveRequests, month, employees]);
+
+  const exportExcel = () => exportToExcel(entries, leaveRequests, month, employees);
+
+  return (
+    <div style={styles.screenWrap}>
+      <TopBar title="Admin" subtitle="Áttekintés" onLogout={onLogout} />
+      <div style={styles.content}>
+        <div style={styles.monthPicker}>
+          <input style={styles.monthInput} type="month" value={month} onChange={(e) => setMonth(e.target.value)} />
+          <button style={styles.exportBtn} onClick={exportExcel}>⬇ Excel export</button>
+        </div>
+        {tab === "summary" && (
+          <div style={{ marginTop: 14 }}>
+            <div style={styles.workdaysNote}>📅 {getWorkdaysInMonth(month)} munkanap ebben a hónapban (hétfő–péntek, ünnepnapok nélkül) · napi {DAILY_HOURS} óra alapján</div>
+            {summary.map(({ emp, totalHours, entriesCount, vacDays, sickDays, requiredHours, diff }) => (
+              <div key={emp.id} style={styles.summaryCard}>
+                <div style={styles.summaryName}>{emp.name}</div>
+                <div style={styles.summaryStats}>
+                  <span><strong>{fmtHM(totalHours)}</strong> ledolgozva</span>
+                  <span>elvárt: {fmtHM(requiredHours)}</span>
+                  <span>{entriesCount} csekkolás</span>
+                  {vacDays > 0 && <span style={{ color: TYPE_COLOR.vacation }}>{vacDays} nap szabadság</span>}
+                  {sickDays > 0 && <span style={{ color: TYPE_COLOR.sick }}>{sickDays} nap betegszabadság</span>}
+                </div>
+                <div style={{ ...styles.diffBadge, ...(diff >= 0 ? styles.diffPositive : styles.diffNegative) }}>
+                  {diff >= 0 ? "Túlóra: +" : "Hiányzó óra: "}{fmtHM(diff)}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        {tab === "leave" && (
+          <div style={{ marginTop: 14 }}>
+            {leaveRequests.length === 0 ? <EmptyState text="Nincs kérelem." /> : leaveRequests.map((l) => (
+              <div key={l.id} style={styles.leaveRow}>
+                <div style={{ ...styles.typeTag, background: TYPE_COLOR[l.type] + "22", color: TYPE_COLOR[l.type] }}>{TYPE_LABEL[l.type]}</div>
+                <div style={{ flex: 1 }}>
+                  <div style={styles.entryDate}>{l.userName} · {l.from} – {l.to}</div>
+                  {l.note && <div style={styles.entryLoc}>{l.note}</div>}
+                </div>
+                <select style={styles.statusSelect} value={l.status} onChange={(e) => onUpdateLeaveStatus(l.id, e.target.value)}>
+                  <option value="elfogadva">Elfogadva</option>
+                  <option value="elutasítva">Elutasítva</option>
+                  <option value="függőben">Függőben</option>
+                </select>
+              </div>
+            ))}
+          </div>
+        )}
+        {tab === "employees" && <EmployeesTab employees={employees} onAdd={onAddEmployee} onRemove={onRemoveEmployee} />}
+      </div>
+      <div style={styles.bottomNav}>
+        <button style={{ ...styles.navBtn, color: tab === "summary" ? "#3b6e5e" : "#9b9486" }} onClick={() => setTab("summary")}><span style={{ fontSize: 16 }}>🕐</span><span style={{ fontSize: 11 }}>Összesítő</span></button>
+        <button style={{ ...styles.navBtn, color: tab === "leave" ? "#3b6e5e" : "#9b9486" }} onClick={() => setTab("leave")}><span style={{ fontSize: 16 }}>📋</span><span style={{ fontSize: 11 }}>Kérelmek</span></button>
+        <button style={{ ...styles.navBtn, color: tab === "employees" ? "#3b6e5e" : "#9b9486" }} onClick={() => setTab("employees")}><span style={{ fontSize: 16 }}>+</span><span style={{ fontSize: 11 }}>Dolgozók</span></button>
+      </div>
+    </div>
+  );
+}
+
+function EmployeesTab({ employees, onAdd, onRemove }) {
+  const [name, setName] = useState("");
+  const [pin, setPin] = useState("");
+  const [error, setError] = useState("");
+  const [confirmRemove, setConfirmRemove] = useState(null);
+  const submit = async () => {
+    setError("");
+    if (!name.trim()) { setError("Adj meg egy nevet."); return; }
+    if (pin.length < 4) { setError("A PIN legalább 4 számjegy legyen."); return; }
+    const res = await onAdd(name.trim(), pin);
+    if (!res.ok) { setError(res.error); return; }
+    setName(""); setPin("");
+  };
+  return (
+    <div>
+      <div style={styles.formCard}>
+        <div style={styles.formRow}><label style={styles.formLabel}>Új dolgozó neve</label><input style={styles.textInput} type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="pl. Kovács Péter" /></div>
+        <div style={styles.formRow}><label style={styles.formLabel}>PIN kód (min. 4 számjegy)</label><input style={styles.textInput} type="text" inputMode="numeric" maxLength={6} value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, ""))} placeholder="pl. 5555" /></div>
+        {error && <div style={styles.errorBox}>⚠ {error}</div>}
+        <button style={styles.primaryBtn} onClick={submit}>+ Dolgozó hozzáadása</button>
+      </div>
+      <div style={{ marginTop: 18 }}>
+        {employees.map((e) => (
+          <div key={e.id} style={styles.leaveRow}>
+            <div style={{ flex: 1 }}><div style={styles.entryDate}>{e.name}</div><div style={styles.entryLoc}>PIN: {e.pin}</div></div>
+            {confirmRemove === e.id ? (
+              <div style={{ display: "flex", gap: 6 }}>
+                <button style={styles.confirmDeleteBtn} onClick={() => { onRemove(e.id); setConfirmRemove(null); }}>Törlés</button>
+                <button style={styles.ghostSmallBtn} onClick={() => setConfirmRemove(null)}>Mégse</button>
+              </div>
+            ) : <button style={styles.removeBtn} onClick={() => setConfirmRemove(e.id)}>✕</button>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function TopBar({ title, subtitle, onLogout }) {
+  return (
+    <div style={styles.topBar}>
+      <div><div style={styles.topTitle}>{title}</div><div style={styles.topSubtitle}>{subtitle}</div></div>
+      <button style={styles.logoutBtn} onClick={onLogout}>Kilépés</button>
+    </div>
+  );
+}
+function EmptyState({ text }) { return <div style={styles.emptyState}>{text}</div>; }
+
+function exportToExcel(entries, leaveRequests, month, employees) {
+  const rows = [["Név", "Dátum", "Érkezés", "Távozás", "Órák", "Lokáció (érkezés)", "Lokáció (távozás)"]];
+  entries.filter((e) => e.checkOut && monthKey(new Date(e.checkIn)) === month)
+    .sort((a, b) => new Date(a.checkIn) - new Date(b.checkIn))
+    .forEach((e) => {
+      const dur = hoursBetween(new Date(e.checkIn), new Date(e.checkOut));
+      rows.push([e.userName, fmtDate(new Date(e.checkIn)), fmtTime(new Date(e.checkIn)), fmtTime(new Date(e.checkOut)), dur.toFixed(2),
+        e.locIn ? `${e.locIn.lat.toFixed(5)},${e.locIn.lng.toFixed(5)}` : "",
+        e.locOut ? `${e.locOut.lat.toFixed(5)},${e.locOut.lng.toFixed(5)}` : ""]);
+    });
+  rows.push([]);
+  const workdays = getWorkdaysInMonth(month);
+  rows.push(["Havi összesítő", month, `${workdays} munkanap`, `napi ${DAILY_HOURS} óra alapján`]);
+  rows.push(["Név", "Ledolgozott óra", "Elvárt óra", "Szabadság (nap)", "Betegszabadság (nap)", "Túlóra / hiányzó óra"]);
+  employees.forEach((emp) => {
+    const empEntries = entries.filter((e) => e.userId === emp.id && e.checkOut && monthKey(new Date(e.checkIn)) === month);
+    const totalHours = empEntries.reduce((s, e) => s + hoursBetween(new Date(e.checkIn), new Date(e.checkOut)), 0);
+    const approvedLeave = leaveRequests.filter((l) => l.userId === emp.id && l.status !== "elutasítva");
+    const vacDays = approvedLeave.filter((l) => l.type === "vacation").reduce((s, l) => s + leaveWorkdaysInMonth(l, month), 0);
+    const sickDays = approvedLeave.filter((l) => l.type === "sick").reduce((s, l) => s + leaveWorkdaysInMonth(l, month), 0);
+    const requiredHours = Math.max(0, workdays - vacDays - sickDays) * DAILY_HOURS;
+    rows.push([emp.name, totalHours.toFixed(2), requiredHours.toFixed(2), vacDays, sickDays, (totalHours - requiredHours).toFixed(2)]);
+  });
+  rows.push([]);
+  rows.push(["Szabadság / betegszabadság kérelmek", month]);
+  rows.push(["Név", "Típus", "Mettől", "Meddig", "Státusz", "Megjegyzés"]);
+  leaveRequests.filter((l) => monthKey(new Date(l.from)) === month).forEach((l) => {
+    rows.push([l.userName, TYPE_LABEL[l.type], l.from, l.to, l.status, l.note || ""]);
+  });
+  const csv = rows.map((r) => r.map((cell) => `"${String(cell ?? "").replace(/"/g, '""')}"`).join(";")).join("\n");
+  const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = `munkaido_${month}.csv`;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+const styles = {
+  app: { minHeight: "100vh" },
+  loadingScreen: { display: "flex", alignItems: "center", justifyContent: "center", height: "100vh" },
+  centerWrap: { minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 },
+  card: { width: "100%", maxWidth: 380, background: "#fff", borderRadius: 18, padding: 28, boxShadow: "0 4px 24px rgba(40,35,20,0.08)" },
+  brandRow: { display: "flex", alignItems: "center", gap: 10, marginBottom: 22 },
+  brandText: { fontWeight: 700, fontSize: 16, letterSpacing: "-0.01em" },
+  subtle: { color: "#7c7567", fontSize: 13, marginBottom: 14 },
+  empGrid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 18 },
+  empBtn: { padding: "16px 10px", borderRadius: 12, border: "1px solid #e6e1d6", background: "#fbfaf6", fontSize: 14, fontWeight: 600, cursor: "pointer", color: "#262420" },
+  adminLink: { display: "flex", alignItems: "center", gap: 6, justifyContent: "center", width: "100%", background: "none", border: "none", color: "#9b9486", fontSize: 12, padding: 8, cursor: "pointer" },
+  backRow: { display: "flex", alignItems: "center", gap: 4, background: "none", border: "none", color: "#7c7567", fontSize: 13, padding: 0, marginBottom: 12, cursor: "pointer" },
+  pinInput: { width: "100%", fontSize: 28, letterSpacing: 10, textAlign: "center", padding: "14px 10px", borderRadius: 12, border: "1px solid #e6e1d6", marginBottom: 12, outline: "none" },
+  errorBox: { display: "flex", alignItems: "center", gap: 6, color: "#a14b3e", fontSize: 12.5, marginBottom: 10 },
+  primaryBtn: { width: "100%", background: "#3b6e5e", color: "#fff", border: "none", borderRadius: 12, padding: "13px 16px", fontSize: 14.5, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 },
+  ghostBtn: { width: "100%", background: "transparent", color: "#7c7567", border: "1px solid #e6e1d6", borderRadius: 12, padding: "13px 16px", fontSize: 14.5, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 },
+  screenWrap: { display: "flex", flexDirection: "column", minHeight: "100vh", paddingBottom: 70 },
+  topBar: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "18px 20px", background: "#fff", borderBottom: "1px solid #ece7da" },
+  topTitle: { fontSize: 17, fontWeight: 700 },
+  topSubtitle: { fontSize: 12, color: "#9b9486" },
+  logoutBtn: { background: "none", border: "1px solid #e6e1d6", borderRadius: 10, padding: "7px 12px", fontSize: 12.5, color: "#7c7567", cursor: "pointer" },
+  content: { padding: 20, flex: 1 },
+  statusCard: { background: "#fff", borderRadius: 14, padding: "16px 18px", marginBottom: 16, border: "1px solid #ece7da" },
+  warnBanner: { display: "flex", alignItems: "flex-start", gap: 8, background: "#fbeee9", border: "1px solid #e8c9bd", color: "#a14b3e", borderRadius: 12, padding: "12px 14px", fontSize: 12.5, lineHeight: 1.4, marginBottom: 14 },
+  warnClose: { background: "none", border: "none", color: "#a14b3e", cursor: "pointer", padding: 0, flexShrink: 0 },
+  statusDot: { width: 10, height: 10, borderRadius: "50%", flexShrink: 0 },
+  statusLabel: { fontSize: 14.5, fontWeight: 600 },
+  statusSub: { fontSize: 12, color: "#9b9486", marginTop: 2 },
+  bigActionBtn: { width: "100%", background: "#3b6e5e", color: "#fff", border: "none", borderRadius: 16, padding: "20px 16px", fontSize: 16, fontWeight: 700, cursor: "pointer", boxShadow: "0 4px 14px rgba(59,110,94,0.25)" },
+  monthSummary: { textAlign: "center", marginTop: 18, fontSize: 13, color: "#6b6557" },
+  entryRow: { display: "flex", alignItems: "center", background: "#fff", borderRadius: 12, padding: "13px 16px", marginBottom: 8, border: "1px solid #ece7da" },
+  entryDate: { fontSize: 13.5, fontWeight: 600 },
+  entryTimes: { fontSize: 12.5, color: "#6b6557", marginTop: 2 },
+  entryLoc: { fontSize: 11, color: "#9b9486", marginTop: 4 },
+  entryDur: { fontSize: 13, fontWeight: 700, color: "#3b6e5e" },
+  emptyState: { textAlign: "center", color: "#9b9486", fontSize: 13, padding: "40px 20px" },
+  secondaryBtn: { width: "100%", background: "#fff", border: "1px dashed #c9c2b2", borderRadius: 12, padding: "14px 16px", fontSize: 14, fontWeight: 600, color: "#3b6e5e", cursor: "pointer" },
+  formCard: { background: "#fff", borderRadius: 14, padding: 18, border: "1px solid #ece7da" },
+  formRow: { marginBottom: 14 },
+  formLabel: { display: "block", fontSize: 12, color: "#7c7567", marginBottom: 6, fontWeight: 600 },
+  chip: { padding: "8px 14px", borderRadius: 20, border: "1px solid #e6e1d6", background: "#fbfaf6", fontSize: 13, cursor: "pointer", color: "#7c7567" },
+  chipActive: (color) => ({ background: color + "22", borderColor: color, color, fontWeight: 700 }),
+  dateInput: { width: "100%", padding: "11px 12px", borderRadius: 10, border: "1px solid #e6e1d6", fontSize: 14 },
+  textInput: { width: "100%", padding: "11px 12px", borderRadius: 10, border: "1px solid #e6e1d6", fontSize: 14 },
+  leaveRow: { display: "flex", alignItems: "center", gap: 12, background: "#fff", borderRadius: 12, padding: "12px 14px", marginBottom: 8, border: "1px solid #ece7da" },
+  typeTag: { fontSize: 11, fontWeight: 700, padding: "5px 9px", borderRadius: 8, whiteSpace: "nowrap" },
+  bottomNav: { position: "fixed", bottom: 0, left: 0, right: 0, display: "flex", background: "#fff", borderTop: "1px solid #ece7da", padding: "8px 0 12px" },
+  navBtn: { flex: 1, background: "none", border: "none", display: "flex", flexDirection: "column", alignItems: "center", gap: 4, cursor: "pointer", padding: 6 },
+  monthPicker: { display: "flex", gap: 10, alignItems: "center" },
+  monthInput: { flex: 1, padding: "11px 12px", borderRadius: 10, border: "1px solid #e6e1d6", fontSize: 14 },
+  exportBtn: { display: "flex", alignItems: "center", gap: 6, background: "#3b6e5e", color: "#fff", border: "none", borderRadius: 10, padding: "11px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" },
+  summaryCard: { background: "#fff", borderRadius: 12, padding: "14px 16px", marginBottom: 8, border: "1px solid #ece7da" },
+  summaryName: { fontSize: 14.5, fontWeight: 700, marginBottom: 6 },
+  summaryStats: { display: "flex", flexWrap: "wrap", gap: "4px 14px", fontSize: 12.5, color: "#6b6557" },
+  workdaysNote: { display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#9b9486", marginBottom: 12 },
+  diffBadge: { marginTop: 8, display: "inline-block", fontSize: 12.5, fontWeight: 700, padding: "4px 10px", borderRadius: 8 },
+  diffPositive: { background: "#3b6e5e1a", color: "#3b6e5e" },
+  diffNegative: { background: "#a14b3e1a", color: "#a14b3e" },
+  statusSelect: { fontSize: 11.5, border: "1px solid #e6e1d6", borderRadius: 8, padding: "5px 6px", background: "#fbfaf6", color: "#6b6557" },
+  removeBtn: { background: "#fbfaf6", border: "1px solid #e6e1d6", borderRadius: 8, padding: 7, color: "#a14b3e", cursor: "pointer" },
+  confirmDeleteBtn: { background: "#a14b3e", color: "#fff", border: "none", borderRadius: 8, padding: "7px 10px", fontSize: 12, fontWeight: 600, cursor: "pointer" },
+  ghostSmallBtn: { background: "none", border: "1px solid #e6e1d6", borderRadius: 8, padding: "7px 10px", fontSize: 12, color: "#7c7567", cursor: "pointer" },
+};
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
